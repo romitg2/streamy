@@ -15,6 +15,12 @@ const transports: mediasoup.types.WebRtcTransport[] = [];
 const producers: mediasoup.types.Producer[] = [];
 const consumers: mediasoup.types.Consumer[] = [];
 
+setInterval(() => {
+    console.log("transports: ", transports.length);
+    console.log("producers: ", producers.length);
+    console.log("consumers: ", consumers.length);
+}, 5000);
+
 const mediaCodecs: mediasoup.types.RtpCodecCapability[] = [
   {
     kind: "audio",
@@ -39,7 +45,6 @@ io.on("connection", (socket) => {
   console.log("Client connected");
 
   socket.on("get-rtpCapabilities", (_, callback) => {
-    console.log("router.rtpCapabilities: ", router.rtpCapabilities);
     callback({ rtpCapabilities: router.rtpCapabilities });
   });
 
@@ -65,6 +70,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on("produce", async ({ kind, rtpParameters }, cb) => {
+      console.log("produce: ", kind, rtpParameters);
       const producer = await transport.produce({ kind, rtpParameters });
       producers.push(producer);
       cb({ id: producer.id });
