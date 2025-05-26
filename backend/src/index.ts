@@ -1,40 +1,26 @@
 import express from "express";
+import http from "http";
 import { Server } from "socket.io";
-import * as http from "http";
-import * as mediasoup from "mediasoup";
+import { mediaCodecs } from "./codecs/mediacodecs.js";
+import mediasoup from "mediasoup";
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" },
+  cors: {
+    origin: "*",
+  },
+});
+
+app.get("/", (req, res) => {
+  res.send("Hello World!");
 });
 
 let worker: mediasoup.types.Worker;
 let router: mediasoup.types.Router;
-const transports: mediasoup.types.WebRtcTransport[] = [];
-const producers: mediasoup.types.Producer[] = [];
-const consumers: mediasoup.types.Consumer[] = [];
 
-setInterval(() => {
-    console.log("transports: ", transports.length);
-    console.log("producers: ", producers.length);
-    console.log("consumers: ", consumers.length);
-}, 5000);
-
-const mediaCodecs: mediasoup.types.RtpCodecCapability[] = [
-  {
-    kind: "audio",
-    mimeType: "audio/opus",
-    clockRate: 48000,
-    channels: 2,
-  },
-  {
-    kind: "video",
-    mimeType: "video/VP8",
-    clockRate: 90000,
-    parameters: {},
-  },
-];
+const producerTransports: mediasoup.types.WebRtcTransport[] = [];
+const consumerTransports: mediasoup.types.WebRtcTransport[] = [];
 
 (async () => {
   worker = await mediasoup.createWorker();
@@ -42,61 +28,79 @@ const mediaCodecs: mediasoup.types.RtpCodecCapability[] = [
 })();
 
 io.on("connection", (socket) => {
-  console.log("Client connected");
+  console.log("a user connected:", socket.id);
 
-  socket.on("get-rtpCapabilities", (_, callback) => {
-    callback({ rtpCapabilities: router.rtpCapabilities });
+  socket.emit("message", "Welcome to Socket.IO!");
+
+  socket.on("get-rtp-capabilities", (callback) => {
+    if (router) {
+      callback({ success: true, data: router.rtpCapabilities });
+    } else {
+      callback({ success: false, error: "Router not ready yet" });
+    }
   });
 
-  socket.on("create-transport", async (_, callback) => {
-    const transport = await router.createWebRtcTransport({
-      listenIps: [{ ip: "127.0.0.1", announcedIp: undefined }],
-      enableUdp: true,
-      enableTcp: true,
-      preferUdp: true,
-    });
+  socket.on('create-send-transport', async (callback) => {
+    if (router) {
+      const transport = await router.createWebRtcTransport({
+        listenIps: [{ ip: '127.0.0.1', announcedIp: undefined }],
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true,
+      });
 
-    transports.push(transport);
+      transport.on('dtlsstatechange', (dtlsState) => {
+        if(dtlsState == 'closed') {
+            transport.close();
+        }
+      })
 
-    callback({
-      id: transport.id,
-      iceParameters: transport.iceParameters,
-      iceCandidates: transport.iceCandidates,
-      dtlsParameters: transport.dtlsParameters,
-    });
+      producerTransports.push(transport);
 
-    socket.on("connect-transport", async ({ dtlsParameters }) => {
-      await transport.connect({ dtlsParameters });
-    });
+      callback({ success: true, data: {
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
+      } });
+    } else {
+      callback({ success: false, error: "Router not ready yet" });
+    }
+  })
 
-    socket.on("produce", async ({ kind, rtpParameters }, cb) => {
-      console.log("produce: ", kind, rtpParameters);
-      const producer = await transport.produce({ kind, rtpParameters });
-      producers.push(producer);
-      cb({ id: producer.id });
-    });
-
-    socket.on("consume", async ({ rtpCapabilities }, cb) => {
-      const producer = producers[0];
-      if (!router.canConsume({ producerId: producer.id, rtpCapabilities })) {
-        return;
+  socket.on("connect-transport", async ({dtlsParameters, transportId}, callback) => {
+    const transport = producerTransports.find((t) => t.id == transportId);
+    if (transport) {
+      try {
+        await transport.connect({ dtlsParameters });
+        callback({ success: true });
+      } catch (err) {
+        callback({ success: false, error: err });
       }
+    } else {
+      callback({ success: false, error: "Transport not found" });
+    }
+  })
 
-      const consumer = await transport.consume({
-        producerId: producer.id,
-        rtpCapabilities,
-        paused: false,
-      });
+  socket.on("produce-transport", async ({kind, rtpParameters, transportId}, callback) => {
+    const transport = producerTransports.find((t) => t.id == transportId);
+    if (transport) {
+      try {
+        const producer = await transport.produce({ kind, rtpParameters });
+        callback({ success: true, data: producer });
+      } catch (err) {
+        callback({ success: false, error: err });
+      }
+    } else {
+      callback({ success: false, error: "Transport not found" });
+    }
+  })
 
-      consumers.push(consumer);
-      cb({
-        id: consumer.id,
-        producerId: producer.id,
-        kind: consumer.kind,
-        rtpParameters: consumer.rtpParameters,
-      });
-    });
+  socket.on("disconnect", () => {
+    console.log("user disconnected:", socket.id);
   });
 });
 
-server.listen(3001, () => console.log("Server running on port 3001"));
+server.listen(3030, () => {
+  console.log("listening on *:3030");
+});
